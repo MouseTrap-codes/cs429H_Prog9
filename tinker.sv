@@ -31,7 +31,7 @@ module control (
     input  [63:0] rt_val,   // register rt contents
     input  [63:0] rd_val,   // register rd contents (sometimes used in branch target)
     input  [63:0] pc,       // current PC
-    output reg    branch,   // if 1, fetch module uses branch_pc
+    output reg    branch,   // if 1, fetch uses branch_pc
     output reg [63:0] branch_pc, // next PC if branching
     output reg    mem_read, // if 1, read 64-bit data from memory
     output reg    mem_write,// if 1, write 64-bit data to memory
@@ -108,8 +108,8 @@ module memory (
 );
     parameter MEM_SIZE = 524288;
 
-    // Must store memory contents in a packed array named `bytes`
-    reg [7:0] bytes [0:MEM_SIZE-1];
+    // The testbench expects this name:
+    reg [7:0] bytes [0:MEM_SIZE-1];  // Must be named "bytes"
 
     // 4-byte instruction fetch
     assign instr_out = (mem_read_instr)
@@ -161,8 +161,8 @@ module reg_file (
     output reg [63:0] rsOut,
     output reg [63:0] rtOut
 );
-    // Must be named `registers`:
-    reg [63:0] registers [0:31];
+    // The testbench expects this name:
+    reg [63:0] registers [0:31];  // Must be named "registers"
 
     // Synchronous write
     always @(posedge clk) begin
@@ -258,13 +258,14 @@ module fpu(
 endmodule
 
 //=====================================================================
-// TINKER_CORE (TOP-LEVEL)
+// TOP-LEVEL MODULE (NAMED "core")
 //=====================================================================
 // Single-cycle design that instantiates fetch, control, memory, reg_file,
-// instruction_decoder, ALU, FPU, etc. On reset:
+// instruction_decoder, ALU, FPU, etc. 
+// On reset:
 //  - PC <= 0x2000
 //  - r31 <= 0x10000
-module tinker_core (
+module core (
     input clk,
     input reset
 );
@@ -291,7 +292,8 @@ module tinker_core (
     wire mem_write;
     reg  [63:0] mem_write_data;
 
-    memory memory_inst (
+    // Instance name must be exactly "memory" for the testbench
+    memory memory (
         .addr(mem_addr),
         .mem_read_instr(mem_read_instr),
         .mem_read_data(mem_read_data),
@@ -319,7 +321,8 @@ module tinker_core (
     reg  [4:0]  write_reg;
     reg         write_enable;
 
-    reg_file reg_file_inst (
+    // Instance name must be exactly "reg_file" for the testbench
+    reg_file reg_file (
         .clk(clk),
         .data_in(write_data),
         .write_reg(write_reg),
@@ -390,7 +393,7 @@ module tinker_core (
         if (reset) begin
             // PC is already handled in fetch
             // Initialize r31 to 0x10000
-            reg_file_inst.registers[31] <= 64'h10000;
+            reg_file.registers[31] <= 64'h10000;
         end
         else begin
             // If we do load/store, address = ALU result
@@ -408,11 +411,10 @@ module tinker_core (
             write_reg    <= rd;
             write_enable <= reg_write_en && (rd != 5'd0);
 
-            // Memory control signals
+            // Memory write
             // (wired above, just pass them)
         end
     end
 
-    // Also tie memory write
     assign mem_write = mem_write_en;
 endmodule
