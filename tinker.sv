@@ -210,7 +210,7 @@ module alu(
     always @(*) begin
         aluResult = 64'b0;
         case (opcode)
-            5'b11000: aluResult = rsVal + rtVal; // add
+            5'b11000: aluResult = $signed(rsVal) + $signed(rtVal); // add
             5'b11001: aluResult = rsVal + L;     // addi
             5'b11010: aluResult = rsVal - rtVal; // sub
             5'b11011: aluResult = rsVal - L;     // subi
