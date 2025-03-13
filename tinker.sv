@@ -248,10 +248,10 @@ module fpu(
         b = $bitstoreal(rtVal);
         r = 0.0;
         case (opcode)
-            5'b10100: r = $signed(a) + $signed(b);        // addf
-            5'b10101: r = $signed(a) - $signed(b);        // subf
-            5'b10110: r = $signed(a) * $signed(b);        // mulf
-            5'b10111: if (b != 0.0) r = $signed(a) / $signed(b); // divf
+            5'b10100: r = a + b;        // addf
+            5'b10101: r = a - b;        // subf
+            5'b10110: r = a * b;        // mulf
+            5'b10111: if (b != 0.0) r = a / b; // divf
         endcase
         fpuResult = $realtobits(r);
     end
@@ -372,7 +372,10 @@ module tinker_core (
     reg [63:0] mux_result;
     always @(*) begin
         // If floating opcode (101xx) => fpu_result
-        if (opcode[4:2] == 3'b101) begin
+        if (opcode == 5'b10100 ||
+            opcode == 5'b10101 ||
+            opcode == 5'b10110 || 
+            opcode == 5'b10111) begin
             mux_result = fpu_result;
         end
         // If mem_read => loaded data
