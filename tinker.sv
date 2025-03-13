@@ -248,10 +248,10 @@ module fpu(
         b = $bitstoreal(rtVal);
         r = 0.0;
         case (opcode)
-            5'b10100: r = a + b;        // addf
-            5'b10101: r = a - b;        // subf
-            5'b10110: r = a * b;        // mulf
-            5'b10111: if (b != 0.0) r = a / b; // divf
+            5'b10100: r = $signed(a) + $signed(b);        // addf
+            5'b10101: r = $signed(a) - $signed(b);        // subf
+            5'b10110: r = $signed(a) * $signed(b);        // mulf
+            5'b10111: if (b != 0.0) r = $signed(a) / $signed(b); // divf
         endcase
         fpuResult = $realtobits(r);
     end
