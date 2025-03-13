@@ -265,7 +265,7 @@ endmodule
 // On reset:
 //  - PC <= 0x2000
 //  - r31 <= 0x10000
-module core (
+module tinker_core (
     input clk,
     input reset
 );
