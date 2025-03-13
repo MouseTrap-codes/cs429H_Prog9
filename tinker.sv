@@ -1,189 +1,418 @@
-//---------------------------------------------------------------------
-// regFile Module
-//---------------------------------------------------------------------
-module regFile (
-    input  [63:0] data,      // Data to be written
-    input         we,        // Write enable signal
-    input         re1,       // Read enable for rs
-    input         re2,       // Read enable for rt
-    input  [4:0]  rd,        // Write address (destination)
-    input  [4:0]  rs,        // Read address 1 (source)
-    input  [4:0]  rt,        // Read address 2 (source)
-    output reg [63:0] rsOut, // Data output from register rs
-    output reg [63:0] rtOut  // Data output from register rt
+//=====================================================================
+// FETCH MODULE
+//=====================================================================
+module fetch (
+    input         clk,
+    input         reset,
+    input         branch,       // High if we should branch this cycle
+    input  [63:0] branch_pc,    // Target address if branching
+    output reg [63:0] pc        // Current Program Counter
 );
-    reg [63:0] registers [31:0];
-
-    // read
-    always @(*) begin
-        if (re1)
-            rsOut = registers[rs];
-        else
-            rsOut = 64'b0;
-        if (re2)
-            rtOut = registers[rt];
-        else
-            rtOut = 64'b0;
-    end
-
-    // write
-    always @(*) begin
-        if (we)
-            registers[rd] = data;
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            pc <= 64'h2000;     // On reset, PC = 0x2000
+        end
+        else if (branch) begin
+            pc <= branch_pc;    // Branch override
+        end
+        else begin
+            pc <= pc + 4;       // Default: increment by 4
+        end
     end
 endmodule
 
-//---------------------------------------------------------------------
-// ALU Module
-//---------------------------------------------------------------------
-module alu (
-    input  [4:0]  opcode,
-    input  [63:0] rs,         // Operand 1
-    input  [63:0] rt,         // Operand 2
-    input  [11:0] L,          // 12-bit literal (for mov)
-    output reg [63:0] result  // ALU result
+//=====================================================================
+// CONTROL MODULE
+//=====================================================================
+// Decides branching, load/store, register writes, etc.
+module control (
+    input  [4:0]  opcode,   // from instruction decoder
+    input  [63:0] rs_val,   // register rs contents
+    input  [63:0] rt_val,   // register rt contents
+    input  [63:0] rd_val,   // register rd contents (sometimes used in branch target)
+    input  [63:0] pc,       // current PC
+    output reg    branch,   // if 1, fetch module uses branch_pc
+    output reg [63:0] branch_pc, // next PC if branching
+    output reg    mem_read, // if 1, read 64-bit data from memory
+    output reg    mem_write,// if 1, write 64-bit data to memory
+    output reg    reg_write // if 1, write result to register file
 );
     always @(*) begin
+        // Defaults
+        branch     = 0;
+        branch_pc  = 64'b0;
+        mem_read   = 0;
+        mem_write  = 0;
+        reg_write  = 1;  // By default, instructions write to RD
+
         case (opcode)
-            // Arithmetic instructions
-            5'b11000: result = rs + rt;         // add
-            5'b11010: result = rs - rt;         // sub
-            5'b11100: result = rs * rt;         // mul
-            5'b11101: result = rs / rt;         // div
-            // Logical instructions
-            5'b00000: result = rs & rt;         // and
-            5'b00001: result = rs | rt;         // or
-            5'b00010: result = rs ^ rt;         // xor
-            5'b00011: result = ~rs;             // not (rt ignored)
-            // Shift instructions (using rt as shift amount)
-            5'b00100: result = rs >> rt;        // shftr
-            5'b00110: result = rs << rt;        // shftl
-            // Data movement instructions
-            5'b10001: result = rs;              // mov rd, rs
-            5'b10010: begin                     // mov rd, L
-                        result = 64'b0;
-                        result[11:0] = L;    
-                     end
-            default: result = 64'b0;
+            // Branch instructions (examples)
+            5'b01000: begin // br rd => pc <- rd_val
+                branch    = 1;
+                branch_pc = rd_val;
+            end
+            5'b01001: begin // brr rd => pc <- pc + rd_val
+                branch    = 1;
+                branch_pc = pc + rd_val;
+            end
+            5'b01010: begin // brr L => pc <- pc + sign-extended L
+                branch    = 1;
+                // For simplicity, assume L is stored in rd_val[11:0]
+                branch_pc = pc + {{52{1'b0}}, rd_val[11:0]};
+            end
+            5'b01011: begin // brnz => if (rs_val != 0) => pc <- rd_val
+                if (rs_val != 0) begin
+                    branch    = 1;
+                    branch_pc = rd_val;
+                end
+            end
+            5'b01110: begin // brgt => if (rs_val > rt_val) => pc <- rd_val
+                if ($signed(rs_val) > $signed(rt_val)) begin
+                    branch    = 1;
+                    branch_pc = rd_val;
+                end
+            end
+
+            // Loads / Stores (examples)
+            // 0x10 => mov rd, (rs)(L) => load
+            5'b10000: begin
+                mem_read  = 1;  // load from memory
+                reg_write = 1;  // write loaded data to RD
+            end
+            // 0x13 => mov (rd)(L), rs => store
+            5'b10011: begin
+                mem_write = 1;  // store data
+                reg_write = 0;  // typically don't write to RD
+            end
+
+            default: begin
+                // Normal ALU instruction => no branch
+                // no special mem read/write
+            end
         endcase
     end
 endmodule
 
-//---------------------------------------------------------------------
-// FPU Module
-//---------------------------------------------------------------------
-module fpu (
-    input  [4:0]  opcode,
-    input  [63:0] rs,         // Operand 1 (bit pattern)
-    input  [63:0] rt,         // Operand 2 (bit pattern)
-    input  [11:0] L,          // Literal (if needed)
-    output reg [63:0] result  // FPU result (64-bit)
+//=====================================================================
+// MEMORY MODULE
+//=====================================================================
+// Single Von Neumann memory storing both instructions (4 bytes) and data (8 bytes).
+module memory (
+    input  [63:0] addr,
+    input         mem_read_instr,  // 1 => fetch 32-bit instruction from addr
+    input         mem_read_data,   // 1 => fetch 64-bit data from addr
+    input         mem_write,       // 1 => write 64-bit data
+    input  [63:0] write_data,      // data to store
+    output [31:0] instr_out,       // 32-bit instruction
+    output [63:0] data_out         // 64-bit data
 );
-    real op1, op2, res_real;
-    always @(*) begin
-        op1 = $bitstoreal(rs);
-        op2 = $bitstoreal(rt);
-        case (opcode)
-            5'b10100: res_real = op1 + op2; // addf
-            5'b10101: res_real = op1 - op2; // subf
-            5'b10110: res_real = op1 * op2; // mulf
-            5'b10111: res_real = op1 / op2; // divf
-            default: res_real = 0.0;
-        endcase
-        result = $realtobits(res_real);
+    parameter MEM_SIZE = 524288;
+
+    // Must store memory contents in a packed array named `bytes`
+    reg [7:0] bytes [0:MEM_SIZE-1];
+
+    // 4-byte instruction fetch
+    assign instr_out = (mem_read_instr)
+        ? { bytes[addr],
+            bytes[addr+1],
+            bytes[addr+2],
+            bytes[addr+3] }
+        : 32'b0;
+
+    // 8-byte data fetch
+    assign data_out = (mem_read_data)
+        ? { bytes[addr],
+            bytes[addr+1],
+            bytes[addr+2],
+            bytes[addr+3],
+            bytes[addr+4],
+            bytes[addr+5],
+            bytes[addr+6],
+            bytes[addr+7] }
+        : 64'b0;
+
+    // Write 8 bytes
+    // For purely synchronous memory, you'd typically do @(posedge clk)
+    always @(posedge mem_write) begin
+        { bytes[addr],
+          bytes[addr+1],
+          bytes[addr+2],
+          bytes[addr+3],
+          bytes[addr+4],
+          bytes[addr+5],
+          bytes[addr+6],
+          bytes[addr+7] } = write_data;
     end
 endmodule
 
+//=====================================================================
+// REG_FILE MODULE
+//=====================================================================
+// Stores register contents in a packed array named `registers`.
+module reg_file (
+    input         clk,
+    input  [63:0] data_in,    // Data to write
+    input  [4:0]  write_reg,  // Destination register index
+    input         we,         // Write enable
+    input  [4:0]  rd,         // For reading rd
+    input  [4:0]  rs,         // For reading rs
+    input  [4:0]  rt,         // For reading rt
+    output reg [63:0] rdOut,
+    output reg [63:0] rsOut,
+    output reg [63:0] rtOut
+);
+    // Must be named `registers`:
+    reg [63:0] registers [0:31];
 
-//---------------------------------------------------------------------
-// Instruction Decoder Module
-//---------------------------------------------------------------------
-// Extracts the instruction fields from a 32-bit instruction.
+    // Synchronous write
+    always @(posedge clk) begin
+        if (we && (write_reg != 5'd0)) begin
+            registers[write_reg] <= data_in;
+        end
+    end
+
+    // Combinational reads
+    always @(*) begin
+        rdOut = registers[rd];
+        rsOut = registers[rs];
+        rtOut = registers[rt];
+    end
+endmodule
+
+//=====================================================================
+// INSTRUCTION DECODER MODULE
+//=====================================================================
 module instruction_decoder(
-    input  [31:0] in,       // 32-bit instruction
-    output [4:0]  opcode,   // Bits 31:27: opcode
-    output [4:0]  rd,       // Bits 26:22: destination register
-    output [4:0]  rs,       // Bits 21:17: source register 1
-    output [4:0]  rt,       // Bits 16:12: source register 2
-    output [11:0] L         // Bits 11:0: literal
+    input  [31:0] instr,
+    output [4:0]  opcode,
+    output [4:0]  rd,
+    output [4:0]  rs,
+    output [4:0]  rt,
+    output [11:0] L
 );
-    assign opcode = in[31:27];
-    assign rd     = in[26:22];
-    assign rs     = in[21:17];
-    assign rt     = in[16:12];
-    assign L      = in[11:0];
+    assign opcode = instr[31:27];
+    assign rd     = instr[26:22];
+    assign rs     = instr[21:17];
+    assign rt     = instr[16:12];
+    assign L      = instr[11:0];
 endmodule
 
-
-
-//---------------------------------------------------------------------
-// tinker_core Module
-//---------------------------------------------------------------------
-// Implements the complete combinational datapath.
-// The instruction decoder extracts fields from the instruction, the shared
-// register file provides operands and receives the computed result, and the 
-// ALU or FPU (selected via a big switch statement) computes the result.
-module tinker_core(
-    input [31:0] instruction  // 32-bit instruction input
+//=====================================================================
+// ALU MODULE
+//=====================================================================
+module alu(
+    input  [4:0]  opcode,
+    input  [63:0] rsVal,
+    input  [63:0] rtVal,
+    input  [11:0] L,
+    output reg [63:0] aluResult
 );
-    // Decoded fields
+    always @(*) begin
+        aluResult = 64'b0;
+        case (opcode)
+            5'b11000: aluResult = rsVal + rtVal; // add
+            5'b11001: aluResult = rsVal + L;     // addi
+            5'b11010: aluResult = rsVal - rtVal; // sub
+            5'b11011: aluResult = rsVal - L;     // subi
+            5'b11100: aluResult = rsVal * rtVal; // mul
+            5'b11101: aluResult = rsVal / rtVal; // div
+            5'b00000: aluResult = rsVal & rtVal; // and
+            5'b00001: aluResult = rsVal | rtVal; // or
+            5'b00010: aluResult = rsVal ^ rtVal; // xor
+            5'b00011: aluResult = ~rsVal;        // not
+            5'b00100: aluResult = rsVal >> rtVal;// shftr
+            5'b00101: aluResult = rsVal >> L;    // shftri
+            5'b00110: aluResult = rsVal << rtVal;// shftl
+            5'b00111: aluResult = rsVal << L;    // shftli
+            5'b10001: aluResult = rsVal;         // mov rd, rs
+            5'b10010: begin                      // mov rd, L
+                aluResult = 64'b0;
+                aluResult[11:0] = L;
+            end
+        endcase
+    end
+endmodule
+
+//=====================================================================
+// FPU MODULE
+//=====================================================================
+module fpu(
+    input  [4:0]  opcode,
+    input  [63:0] rsVal,
+    input  [63:0] rtVal,
+    output reg [63:0] fpuResult
+);
+    real a, b, r;
+    always @(*) begin
+        a = $bitstoreal(rsVal);
+        b = $bitstoreal(rtVal);
+        r = 0.0;
+        case (opcode)
+            5'b10100: r = a + b;        // addf
+            5'b10101: r = a - b;        // subf
+            5'b10110: r = a * b;        // mulf
+            5'b10111: if (b != 0.0) r = a / b; // divf
+        endcase
+        fpuResult = $realtobits(r);
+    end
+endmodule
+
+//=====================================================================
+// TINKER_CORE (TOP-LEVEL)
+//=====================================================================
+// Single-cycle design that instantiates fetch, control, memory, reg_file,
+// instruction_decoder, ALU, FPU, etc. On reset:
+//  - PC <= 0x2000
+//  - r31 <= 0x10000
+module tinker_core (
+    input clk,
+    input reset
+);
+    //=================== FETCH ===================
+    wire [63:0] pc;
+    wire branch;
+    wire [63:0] branch_pc;
+
+    fetch fetch_inst (
+        .clk(clk),
+        .reset(reset),
+        .branch(branch),
+        .branch_pc(branch_pc),
+        .pc(pc)
+    );
+
+    //=================== MEMORY ==================
+    wire [31:0] instr_out;
+    wire [63:0] mem_data_out;
+
+    reg  [63:0] mem_addr;
+    wire mem_read_instr = 1'b1;  // Always fetch instruction
+    wire mem_read_data;
+    wire mem_write;
+    reg  [63:0] mem_write_data;
+
+    memory memory_inst (
+        .addr(mem_addr),
+        .mem_read_instr(mem_read_instr),
+        .mem_read_data(mem_read_data),
+        .mem_write(mem_write),
+        .write_data(mem_write_data),
+        .instr_out(instr_out),
+        .data_out(mem_data_out)
+    );
+
+    //=================== DECODER =================
     wire [4:0] opcode, rd, rs, rt;
     wire [11:0] L;
-    instruction_decoder dec (
-        .in(instruction),
+    instruction_decoder decoder_inst (
+        .instr(instr_out),
         .opcode(opcode),
         .rd(rd),
         .rs(rs),
         .rt(rt),
         .L(L)
     );
-    
-    // Shared register file instance.
-    // This regFile is used both for reading register values (rsOut, rtOut)
-    // and for writing back the computed result.
-    wire [63:0] rsOut, rtOut;
-    reg [63:0] final_result;
-    regFile reg_file (
-        .data(final_result),
-        .we(1'b1),      
-        .re1(1'b1),
-        .re2(1'b1),
+
+    //=================== REGISTER FILE ===========
+    wire [63:0] rdVal, rsVal, rtVal;
+    reg  [63:0] write_data;
+    reg  [4:0]  write_reg;
+    reg         write_enable;
+
+    reg_file reg_file_inst (
+        .clk(clk),
+        .data_in(write_data),
+        .write_reg(write_reg),
+        .we(write_enable),
         .rd(rd),
         .rs(rs),
         .rt(rt),
-        .rsOut(rsOut),
-        .rtOut(rtOut)
+        .rdOut(rdVal),
+        .rsOut(rsVal),
+        .rtOut(rtVal)
     );
-    
-    // Instantiate the ALU and FPU modules.
-    // They take the register file's outputs (rsOut and rtOut) as their operands.
+
+    //=================== ALU / FPU ===============
     wire [63:0] alu_result;
     alu alu_inst (
         .opcode(opcode),
-        .rs(rsOut),
-        .rt(rtOut),
+        .rsVal(rsVal),
+        .rtVal(rtVal),
         .L(L),
-        .result(alu_result)
+        .aluResult(alu_result)
     );
-    
+
     wire [63:0] fpu_result;
     fpu fpu_inst (
         .opcode(opcode),
-        .rs(rsOut),
-        .rt(rtOut),
-        .L(L),
-        .result(fpu_result)
+        .rsVal(rsVal),
+        .rtVal(rtVal),
+        .fpuResult(fpu_result)
     );
-    
-    // Big switch statement to select the appropriate result.
-    // Floating-point opcodes (10100, 10101, 10110, 10111) use fpu_result;
-    // all other opcodes use alu_result.
+
+    //=================== CONTROL =================
+    wire mem_read, mem_write_en, reg_write_en;
+    control control_inst (
+        .opcode(opcode),
+        .rs_val(rsVal),
+        .rt_val(rtVal),
+        .rd_val(rdVal),
+        .pc(pc),
+        .branch(branch),
+        .branch_pc(branch_pc),
+        .mem_read(mem_read),
+        .mem_write(mem_write_en),
+        .reg_write(reg_write_en)
+    );
+
+    //=================== MUX for Write-Back ======
+    reg [63:0] mux_result;
     always @(*) begin
-        case (opcode)
-            5'b10100, 5'b10101, 5'b10110, 5'b10111:
-                final_result = fpu_result;
-            default:
-                final_result = alu_result;
-        endcase
+        // If floating opcode (101xx) => fpu_result
+        if (opcode[4:2] == 3'b101) begin
+            mux_result = fpu_result;
+        end
+        // If mem_read => loaded data
+        else if (mem_read) begin
+            mux_result = mem_data_out;
+        end
+        // Otherwise => ALU result
+        else begin
+            mux_result = alu_result;
+        end
     end
+
+    //=================== Synchronous Block =======
+    // On reset, set r31=0x10000
+    // Decide memory address for load/store vs. instruction fetch
+    // Drive register file writes, etc.
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            // PC is already handled in fetch
+            // Initialize r31 to 0x10000
+            reg_file_inst.registers[31] <= 64'h10000;
+        end
+        else begin
+            // If we do load/store, address = ALU result
+            // Else instruction fetch uses pc
+            mem_addr <= pc; // default
+            if (mem_read || mem_write_en) begin
+                mem_addr <= alu_result;
+            end
+
+            // For store, we write from rsVal typically
+            mem_write_data <= rsVal;
+
+            // Register file write signals
+            write_data   <= mux_result;
+            write_reg    <= rd;
+            write_enable <= reg_write_en && (rd != 5'd0);
+
+            // Memory control signals
+            // (wired above, just pass them)
+        end
+    end
+
+    // Also tie memory write
+    assign mem_write = mem_write_en;
 endmodule
