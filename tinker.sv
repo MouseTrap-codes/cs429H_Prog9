@@ -242,57 +242,18 @@ module fpu(
     input  [63:0] rtVal,
     output reg [63:0] fpuResult
 );
-    // For non-multiply operations, use real arithmetic.
     real a, b, r;
-    
-    // For multiplication, implement manual IEEE-754 multiply.
-    // Extract fields from rsVal and rtVal.
-    // IEEE-754 double precision:
-    //  - Bit 63: sign
-    //  - Bits [62:52]: exponent (11 bits)
-    //  - Bits [51:0]: fraction (52 bits, with an implicit 1 for normalized numbers)
-    wire        sign1   = rsVal[63];
-    wire        sign2   = rtVal[63];
-    wire [10:0] exp1    = rsVal[62:52];
-    wire [10:0] exp2    = rtVal[62:52];
-    wire [51:0] frac1   = rsVal[51:0];
-    wire [51:0] frac2   = rtVal[51:0];
-    // Build 53-bit significands (add implicit 1)
-    wire [52:0] mant1   = {1'b1, frac1};
-    wire [52:0] mant2   = {1'b1, frac2};
-    // Multiply the 53-bit significands.
-    wire [105:0] mant_prod = mant1 * mant2;
-    // The result sign is XOR of inputs.
-    wire sign_res = sign1 ^ sign2;
-    // Sum exponents and subtract bias (1023).
-    wire [11:0] exp_sum = exp1 + exp2;
-    wire [11:0] exp_res = exp_sum - 12'd1023;
-    // Normalization: if the MSB of the product (bit 105) is 1, shift right and add one to exponent.
-    wire normal = mant_prod[105];
-    // Select 53 bits of normalized mantissa.
-    wire [52:0] normalized_mant = normal ? mant_prod[105:53] : mant_prod[104:52];
-    // Adjust exponent if we shifted.
-    wire [11:0] final_exp = normal ? exp_res + 1 : exp_res;
-    // Compose the final 64-bit result (drop the implicit 1).
-    wire [63:0] manual_mult = { sign_res, final_exp[10:0], normalized_mant[51:0] };
-
     always @(*) begin
-        if (opcode == 5'b10110) begin
-            // For mulf, use manual multiplication.
-            fpuResult = manual_mult;
-        end
-        else begin
-            // For addf, subf, divf use real arithmetic.
-            a = $bitstoreal(rsVal);
-            b = $bitstoreal(rtVal);
-            case (opcode)
-                5'b10100: r = a + b;        // addf
-                5'b10101: r = a - b;        // subf
-                5'b10111: if (b != 0.0) r = a / b; else r = 0.0; // divf
-                default:  r = 0.0;
-            endcase
-            fpuResult = $realtobits(r);
-        end
+        a = $bitstoreal(rsVal);
+        b = $bitstoreal(rtVal);
+        r = 0.0;
+        case (opcode)
+            5'b10100: r = a + b;        // addf
+            5'b10101: r = a - b;        // subf
+            5'b10110: r = a * b;        // mulf
+            5'b10111: if (b != 0.0) r = a / b; // divf
+        endcase
+        fpuResult = $realtobits(r);
     end
 endmodule
 
