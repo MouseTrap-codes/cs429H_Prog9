@@ -9,22 +9,18 @@ module fetch (
     output reg [63:0] pc        // Current Program Counter
 );
     always @(posedge clk or posedge reset) begin
-        if (reset) begin
+        if (reset)
             pc <= 64'h2000;     // On reset, PC = 0x2000
-        end
-        else if (branch) begin
+        else if (branch)
             pc <= branch_pc;    // Branch override
-        end
-        else begin
+        else
             pc <= pc + 4;       // Default: increment by 4
-        end
     end
 endmodule
 
 //=====================================================================
 // CONTROL MODULE
 //=====================================================================
-// Decides branching, load/store, register writes, etc.
 module control (
     input  [4:0]  opcode,   // from instruction decoder
     input  [63:0] rs_val,   // register rs contents
@@ -86,8 +82,7 @@ module control (
             end
 
             default: begin
-                // Normal ALU instruction => no branch
-                // no special mem read/write
+                // Normal ALU instruction => no branch, no special mem read/write
             end
         endcase
     end
@@ -96,7 +91,6 @@ endmodule
 //=====================================================================
 // MEMORY MODULE
 //=====================================================================
-// Single Von Neumann memory storing both instructions (4 bytes) and data (8 bytes).
 module memory (
     input  [63:0] addr,
     input         mem_read_instr,  // 1 => fetch 32-bit instruction from addr
@@ -131,8 +125,7 @@ module memory (
             bytes[addr+7] }
         : 64'b0;
 
-    // Write 8 bytes
-    // For purely synchronous memory, you'd typically do @(posedge clk)
+    // Write 8 bytes (synchronous write would normally be clocked)
     always @(posedge mem_write) begin
         { bytes[addr],
           bytes[addr+1],
@@ -148,7 +141,6 @@ endmodule
 //=====================================================================
 // REG_FILE MODULE
 //=====================================================================
-// Stores register contents in a packed array named `registers`.
 module reg_file (
     input         clk,
     input  [63:0] data_in,    // Data to write
@@ -166,9 +158,8 @@ module reg_file (
 
     // Synchronous write
     always @(posedge clk) begin
-        if (we && (write_reg != 5'd0)) begin
+        if (we && (write_reg != 5'd0))
             registers[write_reg] <= data_in;
-        end
     end
 
     // Combinational reads
@@ -234,16 +225,17 @@ module alu(
 endmodule
 
 //=====================================================================
-// FPU MODULE
+// FPU MODULE (SYNCHRONOUS)
 //=====================================================================
 module fpu(
+    input clk,                    // Added clock input for synchrony
     input  [4:0]  opcode,
     input  [63:0] rsVal,
     input  [63:0] rtVal,
     output reg [63:0] fpuResult
 );
     real a, b, r;
-    always @(*) begin
+    always @(posedge clk) begin
         a = $bitstoreal(rsVal);
         b = $bitstoreal(rtVal);
         r = 0.0;
@@ -251,20 +243,16 @@ module fpu(
             5'b10100: r = a + b;        // addf
             5'b10101: r = a - b;        // subf
             5'b10110: r = a * b;        // mulf
-            5'b10111: if (b != 0.0) r = a / b; // divf
+            5'b10111: if (b != 0.0) r = a / b; else r = 0.0; // divf
+            default: r = 0.0;
         endcase
-        fpuResult = $realtobits(r);
+        fpuResult <= $realtobits(r);
     end
 endmodule
 
 //=====================================================================
-// TOP-LEVEL MODULE (NAMED "core")
+// TOP-LEVEL MODULE (NAMED "tinker_core")
 //=====================================================================
-// Single-cycle design that instantiates fetch, control, memory, reg_file,
-// instruction_decoder, ALU, FPU, etc. 
-// On reset:
-//  - PC <= 0x2000
-//  - r31 <= 0x10000
 module tinker_core (
     input clk,
     input reset
@@ -347,6 +335,7 @@ module tinker_core (
 
     wire [63:0] fpu_result;
     fpu fpu_inst (
+        .clk(clk),            // Pass clock to FPU for synchronous update
         .opcode(opcode),
         .rsVal(rsVal),
         .rtVal(rtVal),
@@ -394,28 +383,24 @@ module tinker_core (
     // Drive register file writes, etc.
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            // PC is already handled in fetch
-            // Initialize r31 to 0x10000
+            // PC is handled in fetch.
+            // Initialize r31 to 0x10000.
             reg_file.registers[31] <= 64'h10000;
         end
         else begin
-            // If we do load/store, address = ALU result
-            // Else instruction fetch uses pc
+            // For instruction fetch, mem_addr = pc;
+            // For load/store, we use alu_result.
             mem_addr <= pc; // default
-            if (mem_read || mem_write_en) begin
+            if (mem_read || mem_write_en)
                 mem_addr <= alu_result;
-            end
-
-            // For store, we write from rsVal typically
+                
+            // For store, write from rsVal.
             mem_write_data <= rsVal;
 
-            // Register file write signals
+            // Register file write signals.
             write_data   <= mux_result;
             write_reg    <= rd;
             write_enable <= reg_write_en && (rd != 5'd0);
-
-            // Memory write
-            // (wired above, just pass them)
         end
     end
 
