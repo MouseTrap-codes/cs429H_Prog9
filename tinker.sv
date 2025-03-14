@@ -194,26 +194,36 @@ module fetch(
     assign instruction = fetch_instruction;
 endmodule
 
+//---------------------------------------------------------------------
+// control Module
+//---------------------------------------------------------------------
+// We add an extra input "branch_target" (from reg_file.branch_out)
+// and an extra output "branch_addr_out" (the decoded rd) so that for brgt
+// we can select the branch target correctly.
 module control(
     input         clk,
     input         reset,
     input  [31:0] instruction,
     input  [31:0] PC,
-    input  [63:0] opA,         // from regFile port A (for rs)
-    input  [63:0] opB,         // from regFile port B (for rt)
-    input  [63:0] data_load,   // from memory
-    input  [63:0] branch_target, // from reg_file.branch_out (value of register[rd])
+    input  [63:0] opA,         // Data from regFile port A (for rs)
+    input  [63:0] opB,         // Data from regFile port B (for rt)
+    input  [63:0] data_load,   // Data loaded from memory
+    input  [63:0] branch_target, // New: branch target from reg_file (register[rd])
     output reg [31:0] next_PC,
     output reg [63:0] exec_result,
     output reg        write_en,
     output reg [4:0]  write_reg,
+    // Register file read addresses:
     output reg [4:0]  rf_addrA,
     output reg [4:0]  rf_addrB,
+    // Memory store signals:
     output reg        mem_we,
     output reg [31:0] mem_addr,
     output reg [63:0] mem_write_data,
+    // Data load address for load instructions:
     output reg [31:0] data_load_addr,
-    output [4:0] branch_addr_out  // now continuously assigned
+    // New output: pass decoded rd as branch_addr for regFile.
+    output reg [4:0] branch_addr_out
 );
     // Decode the instruction.
     wire [4:0] opcode, rd, rs, rt;
@@ -227,10 +237,7 @@ module control(
        .L(L)
     );
     
-    // Provide a continuous copy of rd as branch_addr_out.
-    assign branch_addr_out = rd;
-    
-    // Instantiate ALU and FPU (unchanged).
+    // Instantiate ALU and FPU.
     wire [63:0] alu_out;
     alu alu_inst (
        .opcode(opcode),
@@ -250,29 +257,45 @@ module control(
     );
     
     // Set register file read addresses.
+    // Default: use rs for opA and rt for opB.
+    // Then override for specific opcodes.
     always @(*) begin
          rf_addrA = rs;
          rf_addrB = rt;
          case (opcode)
-            5'h19, 5'h1b, 5'h5, 5'h7, 5'h12: rf_addrA = rd;
-            5'hb: rf_addrB = rd;
-            5'h8, 5'h9: rf_addrA = rd;
+            // Immediate instructions: op1 should come from rd.
+            5'h19, 5'h1b, 5'h5, 5'h7, 5'h12:
+                rf_addrA = rd;
+            // Branch-not-zero: branch target comes from rd.
+            5'hb:
+                rf_addrB = rd;
+            // Branch instructions that jump to a register address.
+            5'h8, 5'h9:
+                rf_addrA = rd;
+            // Call: use rd for jump target and force second port to r31.
             5'hc: begin
                 rf_addrA = rd;
                 rf_addrB = 5'd31;
             end
-            5'hd: rf_addrA = 5'd31;
+            // Return: force first port to r31.
+            5'hd:
+                rf_addrA = 5'd31;
+            // For brgt, do NOT override read ports so that opA = register[rs] and opB = register[rt]
+            // (We will use branch_target from reg_file to obtain register[rd].)
+            // Store (mov (rd)(L), rs): use rd as base and rs as value.
             5'h13: begin
                 rf_addrA = rd;
                 rf_addrB = rs;
             end
-            default: ; // no override
+            default: ; // keep defaults
          endcase
+         // Pass the decoded rd to the branch_addr_out.
+         branch_addr_out = rd;
     end
     
     // Main control logic.
     always @(*) begin
-         // Defaults.
+         // Default assignments.
          next_PC         = PC + 4;
          exec_result     = 64'b0;
          write_en        = 1'b0;
@@ -283,60 +306,72 @@ module control(
          data_load_addr  = 32'b0;
          
          case (opcode)
+            // Integer Arithmetic & Logical Instructions:
             5'h18, 5'h1a, 5'h1c, 5'h1d,
             5'h0, 5'h1, 5'h2, 5'h3, 5'h4, 5'h6,
             5'h19, 5'h1b, 5'h5, 5'h7, 5'h12: begin
                 exec_result = alu_out;
                 write_en    = 1'b1;
             end
-            5'h8: next_PC = opA;
-            5'h9: next_PC = PC + opA[31:0];
-            5'ha: next_PC = PC + {{20{L[11]}}, L};
-            5'hb: begin
+            // Branch instructions:
+            5'h8: begin // br rd: PC = register[rd]
+                next_PC = opA; // opA = register rd
+            end
+            5'h9: begin // brr rd: PC = PC + register[rd]
+                next_PC = PC + opA[31:0];
+            end
+            5'ha: begin // brr L: PC = PC + sign-extended L
+                next_PC = PC + {{20{L[11]}}, L};
+            end
+            5'hb: begin // brnz rd, rs: if (register[rs] != 0) then PC = register[rd]
                 if (opA != 0)
-                    next_PC = opB;
+                    next_PC = opB; // opB = register rd (due to override in branch-not-zero case)
                 else
                     next_PC = PC + 4;
             end
-            5'hc: begin
+            5'hc: begin // call rd, rs, rt:
                 mem_we         = 1'b1;
-                mem_addr       = opB - 8;
+                mem_addr       = opB - 8;  // opB = register 31
                 mem_write_data = PC + 4;
-                next_PC        = opA;
+                next_PC        = opA;      // opA = register rd
             end
-            5'hd: begin
-                data_load_addr = opA - 8;
+            5'hd: begin // return:
+                // For return, read r31 and then set load address to (r31 - 8)
+                data_load_addr = opA - 8;  // opA = register 31
                 next_PC        = data_load[31:0];
             end
-            5'he: begin // brgt: if (register[rs] > register[rt]) then PC = register[rd]
+            5'he: begin // brgt rd, rs, rt: if (register[rs] > register[rt]) then PC = register[rd]
                 if ($signed(opA) > $signed(opB))
-                    next_PC = branch_target[31:0];
+                    next_PC = branch_target[31:0]; // branch_target comes from reg_file via branch_out
                 else
                     next_PC = PC + 4;
             end
-            5'h10: begin
-                data_load_addr = opA + {20'b0, L};
+            // Data Movement Instructions:
+            5'h10: begin // mov rd, (rs)(L): load 64-bit word from memory.
+                data_load_addr = opA + {20'b0, L}; // opA = register rs
                 exec_result    = data_load;
                 write_en       = 1'b1;
             end
-            5'h11: begin
+            5'h11: begin // mov rd, rs: move register.
                 exec_result = opA;
                 write_en    = 1'b1;
             end
-            5'h13: begin
+            5'h13: begin // mov (rd)(L), rs: store 64-bit word.
                 mem_we         = 1'b1;
-                mem_addr       = opA + {20'b0, L};
-                mem_write_data = opB;
+                mem_addr       = opA + {20'b0, L}; // opA = register rd (base)
+                mem_write_data = opB;             // opB = register rs (value)
             end
+            // Floating Point Instructions:
             5'h14, 5'h15, 5'h16, 5'h17: begin
                 exec_result = fpu_out;
                 write_en    = 1'b1;
             end
-            default: next_PC = PC + 4;
+            default: begin
+                next_PC = PC + 4;
+            end
          endcase
     end
 endmodule
-
 
 //---------------------------------------------------------------------
 // tinker_core Module (Top Level)
