@@ -271,7 +271,7 @@ module control(
                 rf_addrA = 5'd31;
             // brgt: branch target from rd.
             5'he:
-                // just leave the default
+                rf_addrB = rd;
             // Store (mov (rd)(L), rs): use rd as base and rs as value.
             5'h13: begin
                 rf_addrA = rd;
@@ -330,8 +330,7 @@ module control(
             end
             5'he: begin // brgt rd, rs, rt: if (register[rs] > register[rt]) then PC = register[rd]
                 if ($signed(opA) > $signed(opB))
-                    // Access the branch target directly from the register file's array.
-                    next_PC = tinker_core.reg_file.registers[rd][31:0];
+                    next_PC = opB; // opB = register rd (after override)
                 else
                     next_PC = PC + 4;
             end
