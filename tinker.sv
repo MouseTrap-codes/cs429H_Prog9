@@ -138,7 +138,7 @@ module memory(
     
     always @(posedge clk) begin
         if (reset) begin
-            // (Optional initialization)
+            // do nothing id
         end
         if (store_we) begin
             bytes[store_addr]     <= store_data[63:56];
