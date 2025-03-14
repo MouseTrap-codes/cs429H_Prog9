@@ -47,9 +47,9 @@ module alu (
             5'h7:  result = op1 << L;                    // shftli
             // Data movement
             5'h11: result = op1;                        // mov rd, rs
-            5'h12: begin                                 // mov rd, L: update upper 12 bits
+            5'h12: begin                                 // mov rd, L: update lower 12 bits
                       result = op1;
-                      result[63:52] = L;
+                      result[11:0] = L;
                    end
             default: result = 64'b0;
         endcase
@@ -84,9 +84,6 @@ endmodule
 //---------------------------------------------------------------------
 // regFile Module
 //---------------------------------------------------------------------
-// Note: We add an extra input (branch_addr) and extra output (branch_out)
-// that simply expose the value of registers[branch_addr] without changing the
-// internal declaration of the registers array.
 module regFile (
     input         clk,
     input         reset,
@@ -95,10 +92,8 @@ module regFile (
     input  [4:0]  rd,        // Write address
     input  [4:0]  rs,        // Read address 1
     input  [4:0]  rt,        // Read address 2
-    input  [4:0]  branch_addr, // New: register address for branch target
     output reg [63:0] rsOut, // Data out port A
-    output reg [63:0] rtOut, // Data out port B
-    output [63:0] branch_out // New: data from register[branch_addr]
+    output reg [63:0] rtOut  // Data out port B
 );
     // Declaration exactly as specified:
     reg [63:0] registers [0:31];
@@ -120,9 +115,6 @@ module regFile (
         rsOut = registers[rs];
         rtOut = registers[rt];
     end
-    
-    // Expose the register selected by branch_addr.
-    assign branch_out = registers[branch_addr];
 endmodule
 
 //---------------------------------------------------------------------
@@ -149,10 +141,9 @@ module memory(
     
     always @(posedge clk) begin
         if (reset) begin
-            // Optional memory initialization.
         end
         if (store_we) begin
-            // Store 64-bit word into 8 consecutive bytes.
+            
             bytes[store_addr]     <= store_data[63:56];
             bytes[store_addr + 1] <= store_data[55:48];
             bytes[store_addr + 2] <= store_data[47:40];
@@ -164,13 +155,14 @@ module memory(
         end
     end
     
-    // Little-endian ordering for reads.
+
     assign fetch_instruction = { 
         bytes[fetch_addr+3],
         bytes[fetch_addr+2],
         bytes[fetch_addr+1],
         bytes[fetch_addr]
     };
+    
     assign data_load = { 
         bytes[data_load_addr+7],
         bytes[data_load_addr+6],
@@ -197,18 +189,14 @@ endmodule
 //---------------------------------------------------------------------
 // control Module
 //---------------------------------------------------------------------
-// We add an extra input "branch_target" (from reg_file.branch_out)
-// and an extra output "branch_addr_out" (the decoded rd) so that for brgt
-// we can select the branch target correctly.
 module control(
     input         clk,
     input         reset,
     input  [31:0] instruction,
     input  [31:0] PC,
-    input  [63:0] opA,         // Data from regFile port A (for rs)
-    input  [63:0] opB,         // Data from regFile port B (for rt)
+    input  [63:0] opA,         // Data from regFile port A
+    input  [63:0] opB,         // Data from regFile port B
     input  [63:0] data_load,   // Data loaded from memory
-    input  [63:0] branch_target, // New: branch target from reg_file (register[rd])
     output reg [31:0] next_PC,
     output reg [63:0] exec_result,
     output reg        write_en,
@@ -221,9 +209,7 @@ module control(
     output reg [31:0] mem_addr,
     output reg [63:0] mem_write_data,
     // Data load address for load instructions:
-    output reg [31:0] data_load_addr,
-    // New output: pass decoded rd as branch_addr for regFile.
-    output reg [4:0] branch_addr_out
+    output reg [31:0] data_load_addr
 );
     // Decode the instruction.
     wire [4:0] opcode, rd, rs, rt;
@@ -280,8 +266,9 @@ module control(
             // Return: force first port to r31.
             5'hd:
                 rf_addrA = 5'd31;
-            // For brgt, do NOT override read ports so that opA = register[rs] and opB = register[rt]
-            // (We will use branch_target from reg_file to obtain register[rd].)
+            // brgt: branch target from rd.
+            5'he:
+                rf_addrB = rd;
             // Store (mov (rd)(L), rs): use rd as base and rs as value.
             5'h13: begin
                 rf_addrA = rd;
@@ -289,8 +276,6 @@ module control(
             end
             default: ; // keep defaults
          endcase
-         // Pass the decoded rd to the branch_addr_out.
-         branch_addr_out = rd;
     end
     
     // Main control logic.
@@ -325,7 +310,7 @@ module control(
             end
             5'hb: begin // brnz rd, rs: if (register[rs] != 0) then PC = register[rd]
                 if (opA != 0)
-                    next_PC = opB; // opB = register rd (due to override in branch-not-zero case)
+                    next_PC = opB; // opB = register rd
                 else
                     next_PC = PC + 4;
             end
@@ -342,7 +327,7 @@ module control(
             end
             5'he: begin // brgt rd, rs, rt: if (register[rs] > register[rt]) then PC = register[rd]
                 if ($signed(opA) > $signed(opB))
-                    next_PC = branch_target[31:0]; // branch_target comes from reg_file via branch_out
+                    next_PC = opB; // opB = register rd (after override)
                 else
                     next_PC = PC + 4;
             end
@@ -416,8 +401,6 @@ module tinker_core(
     wire [4:0]  rf_addrA;
     wire [4:0]  rf_addrB;
     wire [63:0] opA, opB;
-    wire [63:0] branch_target;  // from reg_file.branch_out
-    wire [4:0]  branch_addr;    // from control (decoded rd)
     reg  [63:0] write_data;
     reg         write_en;
     reg  [4:0]  write_reg;
@@ -430,10 +413,8 @@ module tinker_core(
         .rd(write_reg),
         .rs(rf_addrA),
         .rt(rf_addrB),
-        .branch_addr(branch_addr), // connect branch address from control
         .rsOut(opA),
-        .rtOut(opB),
-        .branch_out(branch_target) // provides register[branch_addr]
+        .rtOut(opB)
     );
     
     // Instantiate control module.
@@ -456,7 +437,6 @@ module tinker_core(
         .opA(opA),
         .opB(opB),
         .data_load(data_load),
-        .branch_target(branch_target), // extra input for brgt
         .next_PC(next_PC),
         .exec_result(exec_result),
         .write_en(ctrl_write_en),
@@ -466,8 +446,7 @@ module tinker_core(
         .mem_we(ctrl_mem_we),
         .mem_addr(ctrl_mem_addr),
         .mem_write_data(ctrl_mem_write_data),
-        .data_load_addr(ctrl_data_load_addr),
-        .branch_addr_out(branch_addr)  // extra output: decoded rd to use as branch address
+        .data_load_addr(ctrl_data_load_addr)
     );
     
     // Connect control outputs to register file and memory.
