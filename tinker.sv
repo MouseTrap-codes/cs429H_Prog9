@@ -92,6 +92,7 @@ module regFile (
     input  [4:0]  rd,        // Write address
     input  [4:0]  rs,        // Read address 1
     input  [4:0]  rt,        // Read address 2
+    output reg [63:0] rdOut, // Data out pota rd
     output reg [63:0] rsOut, // Data out port A
     output reg [63:0] rtOut  // Data out port B
 );
@@ -112,6 +113,7 @@ module regFile (
     
     // Combinational read.
     always @(*) begin
+        rdOut = registers[rd];
         rsOut = registers[rs];
         rtOut = registers[rt];
     end
@@ -194,6 +196,7 @@ module control(
     input         reset,
     input  [31:0] instruction,
     input  [31:0] PC,
+    input [63:0] opRD,
     input  [63:0] opA,         // Data from regFile port A
     input  [63:0] opB,         // Data from regFile port B
     input  [63:0] data_load,   // Data loaded from memory
@@ -327,7 +330,7 @@ module control(
             end
             5'he: begin // brgt rd, rs, rt: if (register[rs] > register[rt]) then PC = register[rd]
                 if ($signed(opA) > $signed(opB))
-                    next_PC = opB; // opB = register rd (after override)
+                    next_PC = opRD; // opB = register rd (after override)
                 else
                     next_PC = PC + 4;
             end
