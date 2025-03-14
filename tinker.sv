@@ -196,7 +196,6 @@ module control(
     input         reset,
     input  [31:0] instruction,
     input  [31:0] PC,
-    input [63:0] opRD,
     input  [63:0] opA,         // Data from regFile port A
     input  [63:0] opB,         // Data from regFile port B
     input  [63:0] data_load,   // Data loaded from memory
@@ -225,6 +224,8 @@ module control(
        .rt(rt),
        .L(L)
     );
+
+    assign reg [63:0] rdData = rd;
     
     // Instantiate ALU and FPU.
     wire [63:0] alu_out;
@@ -330,7 +331,7 @@ module control(
             end
             5'he: begin // brgt rd, rs, rt: if (register[rs] > register[rt]) then PC = register[rd]
                 if ($signed(opA) > $signed(opB))
-                    next_PC = opRD; // opB = register rd (after override)
+                    next_PC = rdData; // opB = register rd (after override)
                 else
                     next_PC = PC + 4;
             end
