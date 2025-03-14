@@ -47,9 +47,9 @@ module alu (
             5'h7:  result = op1 << L;                    // shftli
             // Data movement
             5'h11: result = op1;                        // mov rd, rs
-            5'h12: begin                                 // mov rd, L: update upper 12 bits
+            5'h12: begin                                 // mov rd, L: update lower 12 bits
                       result = op1;
-                      result[63:52] = L;
+                      result[11:0] = L;
                    end
             default: result = 64'b0;
         endcase
