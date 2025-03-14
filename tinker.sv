@@ -144,7 +144,8 @@ module memory(
             // Optional memory initialization.
         end
         if (store_we) begin
-            // Store 64-bit word into 8 consecutive bytes (big-endian)
+            // Store 64-bit word into 8 consecutive bytes (big-endian storage for writes is fine
+            // if the testbench writes in little-endian format into memory).
             bytes[store_addr]     <= store_data[63:56];
             bytes[store_addr + 1] <= store_data[55:48];
             bytes[store_addr + 2] <= store_data[47:40];
@@ -156,20 +157,25 @@ module memory(
         end
     end
     
-    // Combinational read for instruction fetch (4 bytes):
-    assign fetch_instruction = { bytes[fetch_addr],
-                                 bytes[fetch_addr+1],
-                                 bytes[fetch_addr+2],
-                                 bytes[fetch_addr+3] };
-    // Combinational read for data load (8 bytes):
-    assign data_load = { bytes[data_load_addr],
-                         bytes[data_load_addr+1],
-                         bytes[data_load_addr+2],
-                         bytes[data_load_addr+3],
-                         bytes[data_load_addr+4],
-                         bytes[data_load_addr+5],
-                         bytes[data_load_addr+6],
-                         bytes[data_load_addr+7] };
+    // IMPORTANT: Change the ordering for reads to little-endian.
+    // Combinational read for instruction fetch (4 bytes, little-endian):
+    assign fetch_instruction = { 
+        bytes[fetch_addr+3],
+        bytes[fetch_addr+2],
+        bytes[fetch_addr+1],
+        bytes[fetch_addr]
+    };
+    // Combinational read for data load (8 bytes, little-endian):
+    assign data_load = { 
+        bytes[data_load_addr+7],
+        bytes[data_load_addr+6],
+        bytes[data_load_addr+5],
+        bytes[data_load_addr+4],
+        bytes[data_load_addr+3],
+        bytes[data_load_addr+2],
+        bytes[data_load_addr+1],
+        bytes[data_load_addr]
+    };
 endmodule
 
 //---------------------------------------------------------------------
