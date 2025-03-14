@@ -240,17 +240,39 @@ module control(
     );
     
     // Set register file read addresses.
+    // Default: use rs for opA and rt for opB.
+    // Then override for specific opcodes.
     always @(*) begin
          rf_addrA = rs;
          rf_addrB = rt;
-         if ((opcode == 5'h19) || (opcode == 5'h1b) ||
-             (opcode == 5'h5)  || (opcode == 5'h7)  ||
-             (opcode == 5'h12))
-             rf_addrA = rd;
-         if (opcode == 5'hb)
-             rf_addrB = rd;
-         if ((opcode == 5'h8) || (opcode == 5'h9))
-             rf_addrA = rd;
+         case (opcode)
+            // Immediate instructions: op1 should come from rd.
+            5'h19, 5'h1b, 5'h5, 5'h7, 5'h12:
+                rf_addrA = rd;
+            // Branch-not-zero: branch target comes from rd.
+            5'hb:
+                rf_addrB = rd;
+            // Branch instructions that jump to a register address.
+            5'h8, 5'h9:
+                rf_addrA = rd;
+            // Call: use rd for jump target and force second port to r31.
+            5'hc: begin
+                rf_addrA = rd;
+                rf_addrB = 5'd31;
+            end
+            // Return: force first port to r31.
+            5'hd:
+                rf_addrA = 5'd31;
+            // brgt: branch target from rd.
+            5'he:
+                rf_addrB = rd;
+            // Store (mov (rd)(L), rs): use rd as base and rs as value.
+            5'h13: begin
+                rf_addrA = rd;
+                rf_addrB = rs;
+            end
+            default: ; // keep defaults
+         endcase
     end
     
     // Main control logic.
@@ -273,9 +295,9 @@ module control(
                 exec_result = alu_out;
                 write_en    = 1'b1;
             end
-            // Control Instructions:
-            5'h8: begin // br rd: jump to address in register rd.
-                next_PC = opA;
+            // Branch instructions:
+            5'h8: begin // br rd: PC = register[rd]
+                next_PC = opA; // opA = register rd
             end
             5'h9: begin // brr rd: PC = PC + register[rd]
                 next_PC = PC + opA[31:0];
@@ -283,41 +305,43 @@ module control(
             5'ha: begin // brr L: PC = PC + sign-extended L
                 next_PC = PC + {{20{L[11]}}, L};
             end
-            5'hb: begin // brnz rd, rs: if opA ≠ 0 then PC = opB, else PC+4.
+            5'hb: begin // brnz rd, rs: if (register[rs] != 0) then PC = register[rd]
                 if (opA != 0)
-                    next_PC = opB;
+                    next_PC = opB; // opB = register rd
                 else
                     next_PC = PC + 4;
             end
-            5'hc: begin // call: save PC+4 to memory and jump.
+            5'hc: begin // call rd, rs, rt:
                 mem_we         = 1'b1;
-                mem_addr       = opB - 8;
+                mem_addr       = opB - 8;  // opB = register 31
                 mem_write_data = PC + 4;
-                next_PC        = opA;
+                next_PC        = opA;      // opA = register rd
             end
-            5'hd: begin // return: PC = Mem[r31 - 8]
-                next_PC = data_load[31:0];
+            5'hd: begin // return:
+                // For return, read r31 and then set load address to (r31 - 8)
+                data_load_addr = opA - 8;  // opA = register 31
+                next_PC        = data_load[31:0];
             end
-            5'he: begin // brgt: if opA > opB then branch.
+            5'he: begin // brgt rd, rs, rt: if (register[rs] > register[rt]) then PC = register[rd]
                 if ($signed(opA) > $signed(opB))
-                    next_PC = {27'b0, rd};
+                    next_PC = opB; // opB = register rd (after override)
                 else
                     next_PC = PC + 4;
             end
             // Data Movement Instructions:
-            5'h10: begin // mov rd, (rs)(L): load 64-bit word.
-                data_load_addr = opA + {20'b0, L};
+            5'h10: begin // mov rd, (rs)(L): load 64-bit word from memory.
+                data_load_addr = opA + {20'b0, L}; // opA = register rs
                 exec_result    = data_load;
                 write_en       = 1'b1;
             end
-            5'h11: begin // mov rd, rs: simple register move.
+            5'h11: begin // mov rd, rs: move register.
                 exec_result = opA;
                 write_en    = 1'b1;
             end
             5'h13: begin // mov (rd)(L), rs: store 64-bit word.
                 mem_we         = 1'b1;
-                mem_addr       = opA + {20'b0, L};
-                mem_write_data = opB;
+                mem_addr       = opA + {20'b0, L}; // opA = register rd (base)
+                mem_write_data = opB;             // opB = register rs (value)
             end
             // Floating Point Instructions:
             5'h14, 5'h15, 5'h16, 5'h17: begin
@@ -342,7 +366,7 @@ module tinker_core(
     reg [31:0] PC;
     
     // Instantiate memory module.
-    // NOTE: Instance name is now "memory" (not "mem_inst") to match testbench expectations.
+    // Instance name is "memory" (as expected by the testbench).
     wire [31:0] fetch_instruction;
     wire [63:0] data_load;
     wire [31:0] mem_data_load_addr;
@@ -432,9 +456,9 @@ module tinker_core(
         write_reg  = ctrl_write_reg;
     end
     
-    assign mem_we            = ctrl_mem_we;
-    assign mem_store_addr    = ctrl_mem_addr;
-    assign mem_store_data    = ctrl_mem_write_data;
+    assign mem_we             = ctrl_mem_we;
+    assign mem_store_addr     = ctrl_mem_addr;
+    assign mem_store_data     = ctrl_mem_write_data;
     assign mem_data_load_addr = ctrl_data_load_addr;
     
     // PC update.
