@@ -28,28 +28,24 @@ module alu (
 );
     always @(*) begin
         case (opcode)
-            // Integer arithmetic
             5'h18: result = op1 + op2;                   // add
             5'h19: result = op1 + {52'b0, L};             // addi
             5'h1a: result = op1 - op2;                   // sub
             5'h1b: result = op1 - {52'b0, L};             // subi
             5'h1c: result = op1 * op2;                   // mul
             5'h1d: result = op1 / op2;                   // div
-            // Logical operations
             5'h0:  result = op1 & op2;                   // and
             5'h1:  result = op1 | op2;                   // or
             5'h2:  result = op1 ^ op2;                   // xor
-            5'h3:  result = ~op1;                        // not (rt ignored)
-            // Shift operations
+            5'h3:  result = ~op1;                        // not
             5'h4:  result = op1 >> op2;                  // shftr
             5'h5:  result = op1 >> L;                    // shftri
             5'h6:  result = op1 << op2;                  // shftl
             5'h7:  result = op1 << L;                    // shftli
-            // Data movement
             5'h11: result = op1;                        // mov rd, rs
-            5'h12: begin                                 // mov rd, L: update lower 12 bits
+            5'h12: begin                                 // mov rd, L: update upper 12 bits
                       result = op1;
-                      result[11:0] = L;
+                      result[63:52] = L;
                    end
             default: result = 64'b0;
         endcase
@@ -95,7 +91,7 @@ module regFile (
     output reg [63:0] rsOut, // Data out port A
     output reg [63:0] rtOut  // Data out port B
 );
-    // Declaration exactly as specified:
+    // Declaration exactly as specified.
     reg [63:0] registers [0:31];
     integer i;
     
@@ -135,15 +131,14 @@ module memory(
    input  [63:0] store_data
 );
     parameter MEM_SIZE = 512*1024;  // 512 KB
-    // Declaration exactly as specified:
     reg [7:0] bytes [0:MEM_SIZE-1];
     integer i;
     
     always @(posedge clk) begin
         if (reset) begin
+            // Optional initialization.
         end
         if (store_we) begin
-            
             bytes[store_addr]     <= store_data[63:56];
             bytes[store_addr + 1] <= store_data[55:48];
             bytes[store_addr + 2] <= store_data[47:40];
@@ -155,14 +150,13 @@ module memory(
         end
     end
     
-
+    // Little-endian ordering for reads.
     assign fetch_instruction = { 
         bytes[fetch_addr+3],
         bytes[fetch_addr+2],
         bytes[fetch_addr+1],
         bytes[fetch_addr]
     };
-    
     assign data_load = { 
         bytes[data_load_addr+7],
         bytes[data_load_addr+6],
@@ -194,21 +188,21 @@ module control(
     input         reset,
     input  [31:0] instruction,
     input  [31:0] PC,
-    input  [63:0] opA,         // Data from regFile port A
-    input  [63:0] opB,         // Data from regFile port B
-    input  [63:0] data_load,   // Data loaded from memory
+    input  [63:0] opA,         // from regFile port A (normally register rs)
+    input  [63:0] opB,         // from regFile port B (normally register rt)
+    input  [63:0] data_load,   // from memory
     output reg [31:0] next_PC,
     output reg [63:0] exec_result,
     output reg        write_en,
     output reg [4:0]  write_reg,
-    // Register file read addresses:
+    // These outputs drive the regFile read ports.
     output reg [4:0]  rf_addrA,
     output reg [4:0]  rf_addrB,
-    // Memory store signals:
+    // Memory store signals.
     output reg        mem_we,
     output reg [31:0] mem_addr,
     output reg [63:0] mem_write_data,
-    // Data load address for load instructions:
+    // Data load address for load instructions.
     output reg [31:0] data_load_addr
 );
     // Decode the instruction.
@@ -244,37 +238,32 @@ module control(
     
     // Set register file read addresses.
     // Default: use rs for opA and rt for opB.
-    // Then override for specific opcodes.
+    // Then override as needed.
     always @(*) begin
          rf_addrA = rs;
          rf_addrB = rt;
          case (opcode)
-            // Immediate instructions: op1 should come from rd.
-            5'h19, 5'h1b, 5'h5, 5'h7, 5'h12:
-                rf_addrA = rd;
-            // Branch-not-zero: branch target comes from rd.
-            5'hb:
-                rf_addrB = rd;
-            // Branch instructions that jump to a register address.
-            5'h8, 5'h9:
-                rf_addrA = rd;
-            // Call: use rd for jump target and force second port to r31.
+            // For immediate instructions, use rd for opA.
+            5'h19, 5'h1b, 5'h5, 5'h7, 5'h12: rf_addrA = rd;
+            // For branch-not-zero, force opB to come from rd.
+            5'hb: rf_addrB = rd;
+            // For branch instructions (br and brr), use rd for opA.
+            5'h8, 5'h9: rf_addrA = rd;
+            // For call, use rd for opA and force opB to r31.
             5'hc: begin
                 rf_addrA = rd;
                 rf_addrB = 5'd31;
             end
-            // Return: force first port to r31.
-            5'hd:
-                rf_addrA = 5'd31;
-            // brgt: branch target from rd.
-            5'he:
-                rf_addrB = rd;
-            // Store (mov (rd)(L), rs): use rd as base and rs as value.
+            // For return, force opA to r31.
+            5'hd: rf_addrA = 5'd31;
+            // For brgt, override opA to read from rd.
+            5'he: rf_addrA = rd;
+            // For store (mov (rd)(L), rs): use rd for opA and rs for opB.
             5'h13: begin
                 rf_addrA = rd;
                 rf_addrB = rs;
             end
-            default: ; // keep defaults
+            default: ; // use defaults
          endcase
     end
     
@@ -291,16 +280,15 @@ module control(
          data_load_addr  = 32'b0;
          
          case (opcode)
-            // Integer Arithmetic & Logical Instructions:
+            // Integer arithmetic & logical instructions.
             5'h18, 5'h1a, 5'h1c, 5'h1d,
             5'h0, 5'h1, 5'h2, 5'h3, 5'h4, 5'h6,
             5'h19, 5'h1b, 5'h5, 5'h7, 5'h12: begin
                 exec_result = alu_out;
-                write_en    = 1'b1;
+                write_en = 1'b1;
             end
-            // Branch instructions:
             5'h8: begin // br rd: PC = register[rd]
-                next_PC = opA; // opA = register rd
+                next_PC = opA; // opA now holds register[rd]
             end
             5'h9: begin // brr rd: PC = PC + register[rd]
                 next_PC = PC + opA[31:0];
@@ -310,50 +298,45 @@ module control(
             end
             5'hb: begin // brnz rd, rs: if (register[rs] != 0) then PC = register[rd]
                 if (opA != 0)
-                    next_PC = opB; // opB = register rd
+                    next_PC = opB; // opB holds register[rd] due to override in branch-not-zero case
                 else
                     next_PC = PC + 4;
             end
             5'hc: begin // call rd, rs, rt:
-                mem_we         = 1'b1;
-                mem_addr       = opB - 8;  // opB = register 31
+                mem_we = 1'b1;
+                mem_addr = opB - 8;  // opB = register r31
                 mem_write_data = PC + 4;
-                next_PC        = opA;      // opA = register rd
+                next_PC = opA;       // opA holds register[rd]
             end
             5'hd: begin // return:
-                // For return, read r31 and then set load address to (r31 - 8)
-                data_load_addr = opA - 8;  // opA = register 31
-                next_PC        = data_load[31:0];
+                data_load_addr = opA - 8;  // opA = register r31
+                next_PC = data_load[31:0];
             end
-            5'he: begin // brgt rd, rs, rt: if (register[rs] > register[rt]) then PC = register[rd]
+            5'he: begin // brgt rd, rs, rt: if (register[rd] > register[rt]) then PC = register[rd]
                 if ($signed(opA) > $signed(opB))
-                    next_PC = opB; // opB = register rd (after override)
+                    next_PC = opA; // opA from register[rd]
                 else
                     next_PC = PC + 4;
             end
-            // Data Movement Instructions:
-            5'h10: begin // mov rd, (rs)(L): load 64-bit word from memory.
-                data_load_addr = opA + {20'b0, L}; // opA = register rs
-                exec_result    = data_load;
-                write_en       = 1'b1;
+            5'h10: begin // Load: mov rd, (rs)(L)
+                data_load_addr = opA + {20'b0, L}; // opA from register rs
+                exec_result = data_load;
+                write_en = 1'b1;
             end
-            5'h11: begin // mov rd, rs: move register.
+            5'h11: begin // mov rd, rs
                 exec_result = opA;
-                write_en    = 1'b1;
+                write_en = 1'b1;
             end
-            5'h13: begin // mov (rd)(L), rs: store 64-bit word.
-                mem_we         = 1'b1;
-                mem_addr       = opA + {20'b0, L}; // opA = register rd (base)
-                mem_write_data = opB;             // opB = register rs (value)
+            5'h13: begin // Store: mov (rd)(L), rs
+                mem_we = 1'b1;
+                mem_addr = opA + {20'b0, L}; // opA from register rd
+                mem_write_data = opB;        // opB from register rs
             end
-            // Floating Point Instructions:
-            5'h14, 5'h15, 5'h16, 5'h17: begin
+            5'h14,5'h15,5'h16,5'h17: begin // Floating point instructions.
                 exec_result = fpu_out;
-                write_en    = 1'b1;
+                write_en = 1'b1;
             end
-            default: begin
-                next_PC = PC + 4;
-            end
+            default: next_PC = PC + 4;
          endcase
     end
 endmodule
@@ -365,19 +348,17 @@ module tinker_core(
     input clk,
     input reset
 );
-    // Program Counter (PC) register.
     reg [31:0] PC;
     
-    // Instantiate memory module.
-    // Instance name is "memory" (as expected by the testbench).
+    // Instantiate memory.
     wire [31:0] fetch_instruction;
     wire [63:0] data_load;
     wire [31:0] mem_data_load_addr;
-    wire        mem_we;
+    wire mem_we;
     wire [31:0] mem_store_addr;
     wire [63:0] mem_store_data;
     
-    memory memory (
+    memory memory_inst(
         .clk(clk),
         .reset(reset),
         .fetch_addr(PC),
@@ -389,23 +370,24 @@ module tinker_core(
         .store_data(mem_store_data)
     );
     
-    // Instantiate fetch module.
+    // Instantiate fetch.
     wire [31:0] instruction;
-    fetch fetch_inst (
+    fetch fetch_inst(
         .PC(PC),
         .fetch_instruction(fetch_instruction),
         .instruction(instruction)
     );
     
-    // Instantiate register file (instance name: reg_file).
-    wire [4:0]  rf_addrA;
-    wire [4:0]  rf_addrB;
-    wire [63:0] opA, opB;
-    reg  [63:0] write_data;
-    reg         write_en;
-    reg  [4:0]  write_reg;
+    // Instantiate regFile.
+    wire [4:0] rf_addrA;
+    wire [4:0] rf_addrB;
+    wire [63:0] opA;
+    wire [63:0] opB;
+    reg [63:0] write_data;
+    reg write_en;
+    reg [4:0] write_reg;
     
-    regFile reg_file (
+    regFile reg_file_inst(
         .clk(clk),
         .reset(reset),
         .data_in(write_data),
@@ -417,19 +399,19 @@ module tinker_core(
         .rtOut(opB)
     );
     
-    // Instantiate control module.
+    // Instantiate control.
     wire [31:0] next_PC;
     wire [63:0] exec_result;
-    wire        ctrl_write_en;
-    wire [4:0]  ctrl_write_reg;
-    wire [4:0]  ctrl_rf_addrA;
-    wire [4:0]  ctrl_rf_addrB;
-    wire        ctrl_mem_we;
+    wire ctrl_write_en;
+    wire [4:0] ctrl_write_reg;
+    wire [4:0] ctrl_rf_addrA;
+    wire [4:0] ctrl_rf_addrB;
+    wire ctrl_mem_we;
     wire [31:0] ctrl_mem_addr;
     wire [63:0] ctrl_mem_write_data;
     wire [31:0] ctrl_data_load_addr;
     
-    control ctrl_inst (
+    control control_inst(
         .clk(clk),
         .reset(reset),
         .instruction(instruction),
@@ -449,7 +431,7 @@ module tinker_core(
         .data_load_addr(ctrl_data_load_addr)
     );
     
-    // Connect control outputs to register file and memory.
+    // Connect regFile read addresses.
     assign rf_addrA = ctrl_rf_addrA;
     assign rf_addrB = ctrl_rf_addrB;
     
@@ -459,12 +441,12 @@ module tinker_core(
         write_reg  = ctrl_write_reg;
     end
     
-    assign mem_we             = ctrl_mem_we;
-    assign mem_store_addr     = ctrl_mem_addr;
-    assign mem_store_data     = ctrl_mem_write_data;
+    assign mem_we = ctrl_mem_we;
+    assign mem_store_addr = ctrl_mem_addr;
+    assign mem_store_data = ctrl_mem_write_data;
     assign mem_data_load_addr = ctrl_data_load_addr;
     
-    // PC update.
+    // Update PC.
     always @(posedge clk) begin
         if (reset)
             PC <= 32'h2000;
