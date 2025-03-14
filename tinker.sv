@@ -225,7 +225,7 @@ module control(
        .L(L)
     );
 
-    assign reg [63:0] rdData = rd;
+    reg [63:0] rdData = rd;
     
     // Instantiate ALU and FPU.
     wire [63:0] alu_out;
